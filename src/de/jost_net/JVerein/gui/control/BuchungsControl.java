@@ -1,29 +1,28 @@
 /**********************************************************************
  * Copyright (c) by Heiner Jostkleigrewe
- * 
- * This program is free software: you can redistribute it and/or modify it under the terms of the
- * GNU General Public License as published by the Free Software Foundation, either version 3 of the
+ * This program is free software: you can redistribute it and/or modify it under the terms of the 
+ * GNU General Public License as published by the Free Software Foundation, either version 3 of the 
  * License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
- * even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
+ *  This program is distributed in the hope that it will be useful,  but WITHOUT ANY WARRANTY; without 
+ *  even the implied warranty of  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See 
+ *  the GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along with this program. If
- * not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License along with this program.  If not, 
+ * see <http://www.gnu.org/licenses/>.
  * 
- * heiner@jverein.de | www.jverein.de
+ * heiner@jverein.de
+ * www.jverein.de
  **********************************************************************/
 package de.jost_net.JVerein.gui.control;
 
 import java.io.File;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.rmi.RemoteException;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.Vector;
 
@@ -40,6 +39,7 @@ import de.jost_net.JVerein.DBTools.DBTransaction;
 import de.jost_net.JVerein.Messaging.BuchungMessage;
 import de.jost_net.JVerein.Queries.BuchungQuery;
 import de.jost_net.JVerein.gui.action.BuchungAction;
+import de.jost_net.JVerein.gui.action.BuchungMitgliedskontoZuordnungAutomatischAction;
 import de.jost_net.JVerein.gui.dialogs.BuchungsjournalSortDialog;
 import de.jost_net.JVerein.gui.dialogs.SammelueberweisungAuswahlDialog;
 import de.jost_net.JVerein.gui.formatter.BuchungsartFormatter;
@@ -57,8 +57,10 @@ import de.jost_net.JVerein.io.BuchungAuswertungPDF;
 import de.jost_net.JVerein.io.BuchungsjournalPDF;
 import de.jost_net.JVerein.io.SplitbuchungsContainer;
 import de.jost_net.JVerein.io.Adressbuch.Adressaufbereitung;
+import de.jost_net.JVerein.keys.ArtBuchungsart;
 import de.jost_net.JVerein.keys.BuchungsartSort;
 import de.jost_net.JVerein.keys.SplitbuchungTyp;
+import de.jost_net.JVerein.keys.SteuersatzBuchungsart;
 import de.jost_net.JVerein.keys.Zahlungsweg;
 import de.jost_net.JVerein.rmi.Buchung;
 import de.jost_net.JVerein.rmi.Buchungsart;
@@ -71,8 +73,6 @@ import de.jost_net.JVerein.util.Dateiname;
 import de.jost_net.JVerein.util.JVDateFormatTTMMJJJJ;
 import de.willuhn.datasource.GenericObject;
 import de.willuhn.datasource.rmi.DBIterator;
-import de.willuhn.datasource.rmi.DBService;
-import de.willuhn.datasource.rmi.ResultSetExtractor;
 import de.willuhn.jameica.gui.AbstractControl;
 import de.willuhn.jameica.gui.AbstractView;
 import de.willuhn.jameica.gui.Action;
@@ -107,7 +107,8 @@ import de.willuhn.logging.Logger;
 import de.willuhn.util.ApplicationException;
 import de.willuhn.util.ProgressMonitor;
 
-public class BuchungsControl extends AbstractControl {
+public class BuchungsControl extends AbstractControl
+{
 
   private de.willuhn.jameica.system.Settings settings;
 
@@ -118,8 +119,6 @@ public class BuchungsControl extends AbstractControl {
 
   /* Controls */
   private Input id;
-
-  private IntegerInput belegnummer;
 
   private Input umsatzid;
 
@@ -169,6 +168,8 @@ public class BuchungsControl extends AbstractControl {
 
   private Buchung buchung;
 
+  private ArrayList<Buchung> dependent_buchungen;
+
   private Button sammelueberweisungButton;
 
   private BuchungQuery query;
@@ -181,109 +182,84 @@ public class BuchungsControl extends AbstractControl {
 
   private Vector<Listener> changeKontoListener = new Vector<>();
 
-  private static GregorianCalendar LastBeginnGeschaeftsjahr;
-  private static GregorianCalendar LastEndeGeschaeftsjahr;
-  private static String LastKontoId;
-  private static Integer LastBelegnummer;
-
-  public BuchungsControl(AbstractView view) {
+  public BuchungsControl(AbstractView view)
+  {
     super(view);
     settings = new de.willuhn.jameica.system.Settings(this.getClass());
     settings.setStoreWhenRead(true);
   }
 
-  public static Integer getLastBelegnummer(Date NewDate_, String NewKontoId)
-      throws RemoteException {
-    if (Einstellungen.getEinstellung().getVerwendeBelegnummer()) {
-      Boolean getNewLastBelegnummer = false;
-
-      // Falls kein neues Datum bisher angegeben wurde, wird implizit angenommen, dass heute als
-      // aktuelles Datum eingetragen wird
-      GregorianCalendar NewDate = new GregorianCalendar();
-      if (NewDate_ != null) {
-        NewDate.setTime(NewDate_);
-      }
-
-      // Falls noch nichts initialisiert wurde, dann entsprechend alles setzen
-      if (LastBeginnGeschaeftsjahr == null || LastEndeGeschaeftsjahr == null
-          || LastKontoId == null) {
-        LastBeginnGeschaeftsjahr = Einstellungen.getBeginnGeschaeftsjahr(NewDate);
-        LastEndeGeschaeftsjahr = Einstellungen.getEndeGeschaeftsjahr(NewDate);
-        LastKontoId = NewKontoId;
-        getNewLastBelegnummer = true;
-      }
-
-      // Falls neues Datum nicht innerhalb des aktuellen Geschäftsjahres liegt, Belegnummer neu
-      // auslesen
-      if (!(NewDate.compareTo(LastBeginnGeschaeftsjahr) >= 0
-          && NewDate.compareTo(LastEndeGeschaeftsjahr) <= 0)
-          && Einstellungen.getEinstellung().getBelegnummerProJahr()) {
-        LastBeginnGeschaeftsjahr = Einstellungen.getBeginnGeschaeftsjahr(NewDate);
-        LastEndeGeschaeftsjahr = Einstellungen.getEndeGeschaeftsjahr(NewDate);
-        getNewLastBelegnummer = true;
-      }
-
-      // Falls KontoId anders ist, Belegnummer neu auslesen
-      if (LastKontoId != NewKontoId && Einstellungen.getEinstellung().getBelegnummerProKonto()) {
-        LastKontoId = NewKontoId;
-        getNewLastBelegnummer = true;
-      }
-
-      // neue max. Belegnummer auslesen
-      if (getNewLastBelegnummer) {
-        // SQL Befehl zusammensetzen (je nachdem welche Einstellungen gesetzt sind)
-        List<Object> arg_list = new ArrayList<Object>();
-        String sql = "SELECT max(belegnummer) FROM buchung";
-        if (Einstellungen.getEinstellung().getBelegnummerProJahr()
-            && Einstellungen.getEinstellung().getBelegnummerProKonto()) {
-          sql += " WHERE ";
-        }
-        if (Einstellungen.getEinstellung().getBelegnummerProJahr()) {
-          sql += "datum >= ? AND datum <= ?";
-          arg_list.add(LastBeginnGeschaeftsjahr.getTime());
-          arg_list.add(LastEndeGeschaeftsjahr.getTime());
-          if (Einstellungen.getEinstellung().getBelegnummerProKonto()) {
-            sql += " AND ";
-          }
-        }
-        if (Einstellungen.getEinstellung().getBelegnummerProKonto()) {
-          sql += "konto = " + LastKontoId;
-        }
-        DBService service = Einstellungen.getDBService();
-        LastBelegnummer =
-            (Integer) service.execute(sql, arg_list.toArray(), new ResultSetExtractor() {
-              @Override
-              public Object extract(ResultSet rs) throws SQLException {
-                rs.next();
-                return rs.getInt(1);
-              }
-            });
-      }
-      return LastBelegnummer;
-    } else {
-      return -1;
-    }
-  }
-
-  public static void setNewLastBelegnummer(Integer NewLastBelegnummer, Date NewDate_,
-      String NewKontoId) throws RemoteException {
-    getLastBelegnummer(NewDate_, NewKontoId);
-    LastBelegnummer = NewLastBelegnummer;
-  }
-
-  public Buchung getBuchung() throws RemoteException {
-    if (buchung != null) {
+  public Buchung getBuchung() throws RemoteException
+  {
+    if (buchung != null)
+    {
       return buchung;
     }
     buchung = (Buchung) getCurrentObject();
-    if (buchung == null) {
-      buchung = (Buchung) Einstellungen.getDBService().createObject(Buchung.class, null);
+    if (buchung == null)
+    {
+      buchung = (Buchung) Einstellungen.getDBService()
+          .createObject(Buchung.class, null);
     }
     return buchung;
   }
 
-  public Input getID() throws RemoteException {
-    if (id != null) {
+  public void fillBuchung(Buchung b) throws ApplicationException, RemoteException
+  { 
+    b.setBuchungsart(getSelectedBuchungsArtId());
+    b.setProjektID(getSelectedProjektId());
+    b.setKonto(getSelectedKonto());
+    b.setAuszugsnummer(getAuszugsnummerWert());
+    b.setBlattnummer(getBlattnummerWert());
+    b.setName((String) getName().getValue());
+    if (getBetrag().getValue() != null)
+    {
+      b.setBetrag((Double) getBetrag().getValue());
+    }
+    b.setZweck((String) getZweck().getValue());
+    b.setDatum((Date) getDatum().getValue());
+    b.setArt((String) getArt().getValue());
+    b.setVerzicht((Boolean) getVerzicht().getValue());
+    b.setMitgliedskonto(getSelectedMitgliedsKonto(b));
+    b.setKommentar((String) getKommentar().getValue());
+  }
+
+  public ArrayList<Buchung> getDependentBuchungen() throws RemoteException
+  {
+    if (dependent_buchungen != null)
+    {
+      return dependent_buchungen;
+    }
+
+    // Falls noch nichts erzeugt wurde, neue Liste erzeugen und DependencyId setzen!
+    dependent_buchungen = new ArrayList<Buchung>();
+    if (getBuchung().getDependencyId() == -1) {
+      Buchung new_dependent_buchung = (Buchung) Einstellungen.getDBService()
+        .createObject(Buchung.class, null);
+      getBuchung().setDependencyId(SplitbuchungsContainer.getNewDependencyId());
+      new_dependent_buchung.setDependencyId(getBuchung().getDependencyId());
+      dependent_buchungen.add(new_dependent_buchung);
+    }
+    // Falls DependencyId vorhanden ist, alle anderen Elemente mit gleicher Id raussuchen
+    else {
+      int pos_b = SplitbuchungsContainer.get().indexOf(getBuchung());
+      for (Buchung b_tmp : SplitbuchungsContainer.get()) {
+        if (b_tmp.getDependencyId() == getBuchung().getDependencyId() && 
+            SplitbuchungsContainer.get().indexOf(b_tmp) != pos_b) {
+          dependent_buchungen.add(b_tmp);
+        }
+      }
+    }
+    if (dependent_buchungen.size() == 0) {
+      throw new RemoteException("Buchungen mit Id " + getBuchung().getDependencyId() + " konnten nicht gefunden werden!");
+    }
+    return dependent_buchungen;
+  }
+
+  public Input getID() throws RemoteException
+  {
+    if (id != null)
+    {
       return id;
     }
     id = new TextInput(getBuchung().getID(), 10);
@@ -291,20 +267,15 @@ public class BuchungsControl extends AbstractControl {
     return id;
   }
 
-  public IntegerInput getBelegnummer() throws RemoteException {
-    if (belegnummer != null) {
-      return belegnummer;
-    }
-    belegnummer = new IntegerInput(getBuchung().getBelegnummer());
-    return belegnummer;
-  }
-
-  public Input getUmsatzid() throws RemoteException {
-    if (umsatzid != null) {
+  public Input getUmsatzid() throws RemoteException
+  {
+    if (umsatzid != null)
+    {
       return umsatzid;
     }
     Integer ui = getBuchung().getUmsatzid();
-    if (ui == null) {
+    if (ui == null)
+    {
       ui = Integer.valueOf(0);
     }
     umsatzid = new IntegerInput(ui);
@@ -312,22 +283,27 @@ public class BuchungsControl extends AbstractControl {
     return umsatzid;
   }
 
-  public DialogInput getKonto(boolean withFocus) throws RemoteException {
-    if (konto != null) {
+  public DialogInput getKonto(boolean withFocus) throws RemoteException
+  {
+    if (konto != null)
+    {
       return konto;
     }
     String kontoid = getVorauswahlKontoId();
-    konto = new KontoauswahlInput(getBuchung().getKonto()).getKontoAuswahl(false, kontoid, false,
-        false);
-    if (withFocus) {
+    konto = new KontoauswahlInput(getBuchung().getKonto())
+        .getKontoAuswahl(false, kontoid, false, false);
+    if (withFocus)
+    {
       konto.focus();
     }
     return konto;
   }
 
-  private String getVorauswahlKontoId() throws RemoteException {
+  private String getVorauswahlKontoId() throws RemoteException
+  {
     Buchung buchung = getBuchung();
-    if (null != buchung) {
+    if (null != buchung)
+    {
       Konto konto = buchung.getKonto();
       if (null != konto)
         return konto.getID();
@@ -335,57 +311,79 @@ public class BuchungsControl extends AbstractControl {
     return settings.getString("kontoid", "");
   }
 
-  public Input getAuszugsnummer() {
-    if (auszugsnummer != null) {
+  public Input getAuszugsnummer()
+  {
+    if (auszugsnummer != null)
+    {
       return auszugsnummer;
     }
     Integer intAuszugsnummer;
-    try {
+    try
+    {
       intAuszugsnummer = getBuchung().getAuszugsnummer();
-    } catch (RemoteException e) {
+    }
+    catch (RemoteException e)
+    {
       intAuszugsnummer = null;
     }
-    auszugsnummer = new IntegerInput(intAuszugsnummer != null ? intAuszugsnummer : -1);
+    auszugsnummer = new IntegerInput(
+        intAuszugsnummer != null ? intAuszugsnummer : -1);
     return auszugsnummer;
   }
 
-  public Input getBlattnummer() {
-    if (blattnummer != null) {
+  public Input getBlattnummer()
+  {
+    if (blattnummer != null)
+    {
       return blattnummer;
     }
     Integer intBlattnummer;
-    try {
+    try
+    {
       intBlattnummer = getBuchung().getBlattnummer();
-    } catch (RemoteException e) {
+    }
+    catch (RemoteException e)
+    {
       intBlattnummer = null;
     }
-    blattnummer = new IntegerInput(intBlattnummer != null ? intBlattnummer : -1);
+    blattnummer = new IntegerInput(
+        intBlattnummer != null ? intBlattnummer : -1);
     return blattnummer;
   }
 
-  public Input getName() throws RemoteException {
-    if (name != null) {
+  public Input getName() throws RemoteException
+  {
+    if (name != null)
+    {
       return name;
     }
     name = new TextInput(getBuchung().getName(), 100);
     return name;
   }
 
-  public DecimalInput getBetrag() throws RemoteException {
-    if (betrag != null) {
+  public DecimalInput getBetrag() throws RemoteException
+  {
+    if (betrag != null)
+    {
       return betrag;
     }
 
-    if (getBuchung().isNewObject() && getBuchung().getBetrag() == 0d) {
+    if (getBuchung().isNewObject() && getBuchung().getBetrag() == 0d)
+    {
       betrag = new DecimalInput(Einstellungen.DECIMALFORMAT);
-    } else {
-      betrag = new DecimalInput(getBuchung().getBetrag(), Einstellungen.DECIMALFORMAT);
+    }
+    else
+    {
+      betrag = new DecimalInput(getBuchung().getBetrag(),
+          Einstellungen.DECIMALFORMAT);
     }
     return betrag;
   }
 
-  public Input getZweck() throws RemoteException {
-    if (zweck != null) {
+  public Input getZweck() throws RemoteException
+  {
+    if (zweck != null)
+    {
       return zweck;
     }
     zweck = new TextAreaInput(getBuchung().getZweck(), 500);
@@ -393,8 +391,10 @@ public class BuchungsControl extends AbstractControl {
     return zweck;
   }
 
-  public DateInput getDatum() throws RemoteException {
-    if (datum != null) {
+  public DateInput getDatum() throws RemoteException
+  {
+    if (datum != null)
+    {
       return datum;
     }
     Date d = getBuchung().getDatum();
@@ -404,8 +404,10 @@ public class BuchungsControl extends AbstractControl {
     return datum;
   }
 
-  public TextInput getSuchtext() {
-    if (suchtext != null) {
+  public TextInput getSuchtext()
+  {
+    if (suchtext != null)
+    {
       return suchtext;
     }
     suchtext = new TextInput(settings.getString("suchtext", ""), 35);
@@ -413,8 +415,10 @@ public class BuchungsControl extends AbstractControl {
     return suchtext;
   }
 
-  public TextInput getSuchBetrag() throws RemoteException {
-    if (suchbetrag != null) {
+  public TextInput getSuchBetrag() throws RemoteException
+  {
+    if (suchbetrag != null)
+    {
       return suchbetrag;
     }
     suchbetrag = new TextInput(settings.getString("suchbetrag", ""));
@@ -422,49 +426,66 @@ public class BuchungsControl extends AbstractControl {
     return suchbetrag;
   }
 
-  public CheckboxInput getVerzicht() throws RemoteException {
-    if (verzicht != null) {
+  public CheckboxInput getVerzicht() throws RemoteException
+  {
+    if (verzicht != null)
+    {
       return verzicht;
     }
 
     Boolean vz = buchung.getVerzicht();
-    if (vz == null) {
+    if (vz == null)
+    {
       vz = Boolean.FALSE;
     }
     verzicht = new CheckboxInput(vz);
     return verzicht;
   }
 
-  public DialogInput getMitgliedskonto() throws RemoteException {
-    mitgliedskonto = new MitgliedskontoauswahlInput(getBuchung()).getMitgliedskontoAuswahl();
-    mitgliedskonto.addListener(new Listener() {
+  public DialogInput getMitgliedskonto() throws RemoteException
+  {
+    mitgliedskonto = new MitgliedskontoauswahlInput(getBuchung())
+        .getMitgliedskontoAuswahl();
+    mitgliedskonto.addListener(new Listener()
+    {
 
       @Override
-      public void handleEvent(Event event) {
-        try {
+      public void handleEvent(Event event)
+      {
+        try
+        {
           String name = (String) getName().getValue();
           String zweck1 = (String) getZweck().getValue();
-          if (mitgliedskonto.getValue() != null && name.length() == 0 && zweck1.length() == 0) {
-            if (mitgliedskonto.getValue() instanceof Mitgliedskonto) {
+          if (mitgliedskonto.getValue() != null && name.length() == 0
+              && zweck1.length() == 0)
+          {
+            if (mitgliedskonto.getValue() instanceof Mitgliedskonto)
+            {
               Mitgliedskonto mk = (Mitgliedskonto) mitgliedskonto.getValue();
-              getName().setValue(Adressaufbereitung.getNameVorname(mk.getMitglied()));
+              getName().setValue(
+                  Adressaufbereitung.getNameVorname(mk.getMitglied()));
               getBetrag().setValue(mk.getBetrag());
               getZweck().setValue(mk.getZweck1());
               getDatum().setValue(mk.getDatum());
             }
-            if (mitgliedskonto.getValue() instanceof Mitglied) {
+            if (mitgliedskonto.getValue() instanceof Mitglied)
+            {
               Mitglied m2 = (Mitglied) mitgliedskonto.getValue();
               getName().setValue(Adressaufbereitung.getNameVorname(m2));
               getDatum().setValue(new Date());
             }
           }
-          if (mitgliedskonto.getValue() instanceof Mitgliedskonto) {
+          if (mitgliedskonto.getValue() instanceof Mitgliedskonto)
+          {
             Mitgliedskonto mk = (Mitgliedskonto) mitgliedskonto.getValue();
-            if (getBuchungsart().getValue() == null) {
+            if (getBuchungsart().getValue() == null)
+            {
               getBuchungsart().setValue(mk.getBuchungsart());
             }
           }
-        } catch (RemoteException e) {
+        }
+        catch (RemoteException e)
+        {
           Logger.error("Fehler", e);
         }
       }
@@ -472,16 +493,20 @@ public class BuchungsControl extends AbstractControl {
     return mitgliedskonto;
   }
 
-  public Input getArt() throws RemoteException {
-    if (art != null && !art.getControl().isDisposed()) {
+  public Input getArt() throws RemoteException
+  {
+    if (art != null && !art.getControl().isDisposed())
+    {
       return art;
     }
     art = new TextInput(getBuchung().getArt(), 100);
     return art;
   }
 
-  public Input getKommentar() throws RemoteException {
-    if (kommentar != null && !kommentar.getControl().isDisposed()) {
+  public Input getKommentar() throws RemoteException
+  {
+    if (kommentar != null && !kommentar.getControl().isDisposed())
+    {
       return kommentar;
     }
     kommentar = new TextAreaInput(getBuchung().getKommentar(), 1024);
@@ -489,24 +514,30 @@ public class BuchungsControl extends AbstractControl {
     return kommentar;
   }
 
-  public Input getBuchungsart() throws RemoteException {
-    if (buchungsart != null && !buchungsart.getControl().isDisposed()) {
+  public Input getBuchungsart() throws RemoteException
+  {
+    if (buchungsart != null && !buchungsart.getControl().isDisposed())
+    {
       return buchungsart;
     }
-    buchungsart =
-        new BuchungsartInput().getBuchungsartInput(buchungsart, getBuchung().getBuchungsart());
+    buchungsart = new BuchungsartInput().getBuchungsartInput(buchungsart,
+        getBuchung().getBuchungsart());
     return buchungsart;
   }
 
-  public Input getProjekt() throws RemoteException {
-    if (projekt != null && !projekt.getControl().isDisposed()) {
+  public Input getProjekt() throws RemoteException
+  {
+    if (projekt != null && !projekt.getControl().isDisposed())
+    {
       return projekt;
     }
-    DBIterator<Projekt> list = Einstellungen.getDBService().createList(Projekt.class);
-    Date buchungsDatum = getBuchung().getDatum() == null ? new Date() : getBuchung().getDatum();
+    DBIterator<Projekt> list = Einstellungen.getDBService()
+        .createList(Projekt.class);
+    Date buchungsDatum = getBuchung().getDatum() == null ? new Date()
+        : getBuchung().getDatum();
     list.addFilter(
         "((startdatum is null or startdatum <= ?) and (endedatum is null or endedatum >= ?))",
-        new Object[] {buchungsDatum, buchungsDatum});
+        new Object[] { buchungsDatum, buchungsDatum });
     list.setOrder("ORDER BY bezeichnung");
     projekt = new SelectInput(list, getBuchung().getProjekt());
     projekt.setValue(getBuchung().getProjekt());
@@ -515,28 +546,39 @@ public class BuchungsControl extends AbstractControl {
     return projekt;
   }
 
-  public DialogInput getSuchKonto() throws RemoteException {
-    if (suchkonto != null) {
+  public DialogInput getSuchKonto() throws RemoteException
+  {
+    if (suchkonto != null)
+    {
       return suchkonto;
     }
     String kontoid = settings.getString("suchkontoid", "");
-    suchkonto = new KontoauswahlInput().getKontoAuswahl(true, kontoid, false, false);
+    suchkonto = new KontoauswahlInput().getKontoAuswahl(true, kontoid, false,
+        false);
     suchkonto.addListener(new FilterListener());
     return suchkonto;
   }
 
-  public Button getSammelueberweisungButton() {
-    sammelueberweisungButton = new Button("Sammelüberweisung", new Action() {
+  public Button getSammelueberweisungButton()
+  {
+    sammelueberweisungButton = new Button("Sammelüberweisung", new Action()
+    {
 
       @Override
-      public void handleAction(Object context) {
+      public void handleAction(Object context)
+      {
         Buchung master = (Buchung) getCurrentObject();
-        SammelueberweisungAuswahlDialog suad = new SammelueberweisungAuswahlDialog(master);
-        try {
+        SammelueberweisungAuswahlDialog suad = new SammelueberweisungAuswahlDialog(
+            master);
+        try
+        {
           SepaSammelUeberweisung su = suad.open();
-          if (su != null) {
-            for (SepaSammelUeberweisungBuchung ssub : su.getBuchungen()) {
-              Buchung b = (Buchung) Einstellungen.getDBService().createObject(Buchung.class, null);
+          if (su != null)
+          {
+            for (SepaSammelUeberweisungBuchung ssub : su.getBuchungen())
+            {
+              Buchung b = (Buchung) Einstellungen.getDBService()
+                  .createObject(Buchung.class, null);
               b.setAuszugsnummer(master.getAuszugsnummer());
               b.setBetrag(ssub.getBetrag() * -1);
               b.setBlattnummer(master.getBlattnummer());
@@ -552,7 +594,9 @@ public class BuchungsControl extends AbstractControl {
             }
             refreshSplitbuchungen();
           }
-        } catch (Exception e) {
+        }
+        catch (Exception e)
+        {
           e.printStackTrace();
         }
       }
@@ -561,18 +605,23 @@ public class BuchungsControl extends AbstractControl {
     return sammelueberweisungButton;
   }
 
-  public Input getSuchProjekt() throws RemoteException {
-    if (suchprojekt != null) {
+  public Input getSuchProjekt() throws RemoteException
+  {
+    if (suchprojekt != null)
+    {
       return suchprojekt;
     }
     ArrayList<Projekt> projektliste = new ArrayList<>();
-    Projekt p1 = (Projekt) Einstellungen.getDBService().createObject(Projekt.class, null);
+    Projekt p1 = (Projekt) Einstellungen.getDBService()
+        .createObject(Projekt.class, null);
     p1.setBezeichnung("Ohne Projekt");
     projektliste.add(p1);
 
-    DBIterator<Projekt> list = Einstellungen.getDBService().createList(Projekt.class);
+    DBIterator<Projekt> list = Einstellungen.getDBService()
+        .createList(Projekt.class);
     list.setOrder("ORDER BY bezeichnung");
-    while (list.hasNext()) {
+    while (list.hasNext())
+    {
       projektliste.add(list.next());
     }
 
@@ -583,36 +632,46 @@ public class BuchungsControl extends AbstractControl {
     return suchprojekt;
   }
 
-  public Input getSuchBuchungsart() throws RemoteException {
-    if (suchbuchungsart != null) {
+  public Input getSuchBuchungsart() throws RemoteException
+  {
+    if (suchbuchungsart != null)
+    {
       return suchbuchungsart;
     }
-    DBIterator<Buchungsart> list = Einstellungen.getDBService().createList(Buchungsart.class);
-    if (Einstellungen.getEinstellung().getBuchungsartSort() == BuchungsartSort.NACH_NUMMER) {
+    DBIterator<Buchungsart> list = Einstellungen.getDBService()
+        .createList(Buchungsart.class);
+    if (Einstellungen.getEinstellung()
+        .getBuchungsartSort() == BuchungsartSort.NACH_NUMMER)
+    {
       list.setOrder("ORDER BY nummer");
-    } else {
+    }
+    else
+    {
       list.setOrder("ORDER BY bezeichnung");
     }
     ArrayList<Buchungsart> liste = new ArrayList<>();
-    Buchungsart b1 =
-        (Buchungsart) Einstellungen.getDBService().createObject(Buchungsart.class, null);
+    Buchungsart b1 = (Buchungsart) Einstellungen.getDBService()
+        .createObject(Buchungsart.class, null);
     b1.setNummer(-2);
     b1.setBezeichnung("Alle Buchungsarten");
     b1.setArt(-2);
     liste.add(b1);
-    Buchungsart b2 =
-        (Buchungsart) Einstellungen.getDBService().createObject(Buchungsart.class, null);
+    Buchungsart b2 = (Buchungsart) Einstellungen.getDBService()
+        .createObject(Buchungsart.class, null);
     b2.setNummer(-1);
     b2.setBezeichnung("Ohne Buchungsart");
     b2.setArt(-1);
     liste.add(b2);
-    while (list.hasNext()) {
+    while (list.hasNext())
+    {
       liste.add(list.next());
     }
     int bwert = settings.getInt(BUCHUNGSART, -2);
     Buchungsart b = null;
-    for (int i = 0; i < liste.size(); i++) {
-      if (liste.get(i).getNummer() == bwert) {
+    for (int i = 0; i < liste.size(); i++)
+    {
+      if (liste.get(i).getNummer() == bwert)
+      {
         b = liste.get(i);
         break;
       }
@@ -620,7 +679,8 @@ public class BuchungsControl extends AbstractControl {
     suchbuchungsart = new SelectInput(liste, b);
     suchbuchungsart.addListener(new FilterListener());
 
-    switch (Einstellungen.getEinstellung().getBuchungsartSort()) {
+    switch (Einstellungen.getEinstellung().getBuchungsartSort())
+    {
       case BuchungsartSort.NACH_NUMMER:
         suchbuchungsart.setAttribute("nrbezeichnung");
         break;
@@ -635,14 +695,20 @@ public class BuchungsControl extends AbstractControl {
     return suchbuchungsart;
   }
 
-  public DateInput getVondatum() {
-    if (vondatum != null) {
+  public DateInput getVondatum()
+  {
+    if (vondatum != null)
+    {
       return vondatum;
     }
     Date d = null;
-    try {
-      d = new JVDateFormatTTMMJJJJ().parse(settings.getString("vondatum", "01.01.2006"));
-    } catch (ParseException e) {
+    try
+    {
+      d = new JVDateFormatTTMMJJJJ()
+          .parse(settings.getString("vondatum", "01.01.2006"));
+    }
+    catch (ParseException e)
+    {
       //
     }
     this.vondatum = new DateInput(d, new JVDateFormatTTMMJJJJ());
@@ -653,14 +719,20 @@ public class BuchungsControl extends AbstractControl {
     return vondatum;
   }
 
-  public DateInput getBisdatum() {
-    if (bisdatum != null) {
+  public DateInput getBisdatum()
+  {
+    if (bisdatum != null)
+    {
       return bisdatum;
     }
     Date d = null;
-    try {
-      d = new JVDateFormatTTMMJJJJ().parse(settings.getString("bisdatum", "31.12.2006"));
-    } catch (ParseException e) {
+    try
+    {
+      d = new JVDateFormatTTMMJJJJ()
+          .parse(settings.getString("bisdatum", "31.12.2006"));
+    }
+    catch (ParseException e)
+    {
       //
     }
     this.bisdatum = new DateInput(d, new JVDateFormatTTMMJJJJ());
@@ -671,90 +743,145 @@ public class BuchungsControl extends AbstractControl {
     return bisdatum;
   }
 
-  public Button getStartAuswertungEinzelbuchungenButton() {
-    Button b = new Button("PDF Einzelbuchungen", new Action() {
+  public Button getStartAuswertungEinzelbuchungenButton()
+  {
+    Button b = new Button("PDF Einzelbuchungen", new Action()
+    {
 
       @Override
-      public void handleAction(Object context) {
+      public void handleAction(Object context)
+      {
         starteAuswertung(true);
       }
     }, null, true, "file-pdf.png"); // "true" defines this button as the default
     return b;
   }
 
-  public Button getStartCSVAuswertungButton() {
-    Button b = new Button("CSV-Export", new Action() {
+  public Button getStartCSVAuswertungButton()
+  {
+    Button b = new Button("CSV-Export", new Action()
+    {
 
       @Override
-      public void handleAction(Object context) {
+      public void handleAction(Object context)
+      {
         starteCSVExport();
       }
     }, null, true, "code.png"); // "true" defines this button as the default
     return b;
   }
 
-  public Button getStartAuswertungSummenButton() {
-    Button b = new Button("PDF Summen", new Action() {
+  public Button getStartAuswertungSummenButton()
+  {
+    Button b = new Button("PDF Summen", new Action()
+    {
 
       @Override
-      public void handleAction(Object context) {
+      public void handleAction(Object context)
+      {
         starteAuswertung(false);
       }
     }, null, true, "file-pdf.png"); // "true" defines this button as the default
     return b;
   }
 
-  public Button getStartAuswertungBuchungsjournalButton() {
-    Button b = new Button("PDF Buchungsjournal", new Action() {
+  public Button getStarteBuchungMitgliedskontoZuordnungAutomatischButton()
+  {
+    Button b = new Button("Zuordnung", new BuchungMitgliedskontoZuordnungAutomatischAction(getVondatum(), getBisdatum()), null, false,
+            "user-friends.png");
+    return b;
+  }
+
+  public Button getStartAuswertungBuchungsjournalButton()
+  {
+    Button b = new Button("PDF Buchungsjournal", new Action()
+    {
 
       @Override
-      public void handleAction(Object context) {
+      public void handleAction(Object context)
+      {
         starteAuswertungBuchungsjournal();
       }
     }, null, true, "file-pdf.png"); // "true" defines this button as the default
     return b;
   }
 
-  private void handleStore() throws ApplicationException {
-    try {
+  private void handleStore() throws ApplicationException
+  {
+    try
+    {
       Buchung b = getBuchung();
+      fillBuchung(b);
 
-      b.setBuchungsart(getSelectedBuchungsArtId());
-      b.setProjektID(getSelectedProjektId());
-      b.setKonto(getSelectedKonto());
-      b.setAuszugsnummer(getAuszugsnummerWert());
-      b.setBlattnummer(getBlattnummerWert());
-      b.setName((String) getName().getValue());
-      if (getBetrag().getValue() != null) {
-        b.setBetrag((Double) getBetrag().getValue());
-      }
-      b.setZweck((String) getZweck().getValue());
-      b.setDatum((Date) getDatum().getValue());
-      b.setArt((String) getArt().getValue());
-      b.setVerzicht((Boolean) getVerzicht().getValue());
-      b.setMitgliedskonto(getSelectedMitgliedsKonto(b));
-      b.setKommentar((String) getKommentar().getValue());
-      b.setBelegnummer((Integer) getBelegnummer().getValue());
-
-      if (b.getSpeicherung()) {
+      if (b.getSpeicherung())
+      {
         b.store();
         getID().setValue(b.getID());
-        setNewLastBelegnummer(b.getBelegnummer(), b.getDatum(), b.getKonto().getID());
         GUI.getStatusBar().setSuccessText("Buchung gespeichert");
-      } else {
-        SplitbuchungsContainer.add(b);
+      }
+      else
+      {
+        Buchungsart b_art = b.getBuchungsart();
+        if (b_art.getSteuersatz() > 0) {
+          Buchung b_steuer = getDependentBuchungen().get(0);     
+          fillBuchung(b_steuer);
+
+          BigDecimal steuer = new BigDecimal(
+            Double.toString(b.getBetrag() * b_art.getSteuersatz() / 100))
+            .setScale(2, RoundingMode.HALF_UP);
+          String zweck_postfix = " - " + SteuersatzBuchungsart.get(b_art.getSteuersatz());
+          switch (b_art.getArt()) {
+            case ArtBuchungsart.AUSGABE:
+              zweck_postfix += " VSt.";
+              break;
+            case ArtBuchungsart.EINNAHME:
+              zweck_postfix += " MwSt.";
+              break;
+            default:
+              zweck_postfix += " USt.";
+              break;
+          }
+          
+          b_steuer.setBuchungsart(new Long(b_art.getSteuerBuchungsart().getID()));
+          b_steuer.setBetrag(steuer.doubleValue());
+          b_steuer.setZweck(b.getZweck() + zweck_postfix);          
+          b_steuer.setSplitId(b.getSplitId());
+          b_steuer.setSplitTyp(SplitbuchungTyp.SPLIT);
+          
+          SplitbuchungsContainer.add(b);
+          SplitbuchungsContainer.add(b_steuer);
+        }
+        else {
+          // Falls vorher abhängige Buchungen erzeugt wurden, nun dies aber durch ändern der Buchungsart o.ä. aufgehoben wird, 
+          // alle abhängigen Buchungen löschen und Abhängigkeit resetten
+          if (b.getDependencyId() != -1) {
+            for (Buchung b_tmp : getDependentBuchungen()) {
+              b_tmp.setDependencyId(-1);
+              b_tmp.setDelete(true);
+              Application.getMessagingFactory().sendMessage(new BuchungMessage(b_tmp));
+            }
+            b.setDependencyId(-1);
+          }
+          SplitbuchungsContainer.add(b);
+        }
+       
         refreshSplitbuchungen();
         GUI.getStatusBar().setSuccessText("Buchung übernommen");
       }
-    } catch (RemoteException ex) {
+    }
+    catch (RemoteException ex)
+    {
       final String meldung = "Fehler beim Speichern der Buchung.";
       Logger.error(meldung, ex);
       throw new ApplicationException(meldung, ex);
     }
   }
 
-  private Mitgliedskonto getSelectedMitgliedsKonto(Buchung b) throws ApplicationException {
-    try {
+  private Mitgliedskonto getSelectedMitgliedsKonto(Buchung b)
+      throws ApplicationException
+  {
+    try
+    {
       Object auswahl = mitgliedskonto.getValue();
       if (null == auswahl)
         return null;
@@ -762,10 +889,11 @@ public class BuchungsControl extends AbstractControl {
       if (auswahl instanceof Mitgliedskonto)
         return (Mitgliedskonto) auswahl;
 
-      if (auswahl instanceof Mitglied) {
+      if (auswahl instanceof Mitglied)
+      {
         Mitglied mitglied = (Mitglied) auswahl;
-        Mitgliedskonto mk =
-            (Mitgliedskonto) Einstellungen.getDBService().createObject(Mitgliedskonto.class, null);
+        Mitgliedskonto mk = (Mitgliedskonto) Einstellungen.getDBService()
+            .createObject(Mitgliedskonto.class, null);
         mk.setBetrag(b.getBetrag());
         mk.setDatum(b.getDatum());
         mk.setMitglied(mitglied);
@@ -777,108 +905,136 @@ public class BuchungsControl extends AbstractControl {
         return mk;
       }
       return null;
-    } catch (RemoteException ex) {
+    }
+    catch (RemoteException ex)
+    {
       final String meldung = "Fehler beim Buchen des Mitgliedskontos.";
       Logger.error(meldung, ex);
       throw new ApplicationException(meldung, ex);
     }
   }
 
-  private Integer getBlattnummerWert() throws ApplicationException {
+  private Integer getBlattnummerWert() throws ApplicationException
+  {
     Integer intBlatt = (Integer) getBlattnummer().getValue();
-    if (intBlatt != null && intBlatt <= 0) {
-      final String meldung =
-          "Blattnummer kann nicht gespeichert werden. Muss leer oder eine positive Zahl sein.";
+    if (intBlatt != null && intBlatt <= 0)
+    {
+      final String meldung = "Blattnummer kann nicht gespeichert werden. Muss leer oder eine positive Zahl sein.";
       Logger.error(meldung);
       throw new ApplicationException(meldung);
     }
     return intBlatt;
   }
 
-  private Integer getAuszugsnummerWert() throws ApplicationException {
+  private Integer getAuszugsnummerWert() throws ApplicationException
+  {
     Integer intAuszugsnummer = (Integer) auszugsnummer.getValue();
-    if (intAuszugsnummer != null && intAuszugsnummer <= 0) {
-      final String meldung =
-          "Auszugsnummer kann nicht gespeichert werden. Muss leer oder eine positive Zahl sein.";
+    if (intAuszugsnummer != null && intAuszugsnummer <= 0)
+    {
+      final String meldung = "Auszugsnummer kann nicht gespeichert werden. Muss leer oder eine positive Zahl sein.";
       Logger.error(meldung);
       throw new ApplicationException(meldung);
     }
     return intAuszugsnummer;
   }
 
-  private Konto getSelectedKonto() throws ApplicationException {
-    try {
+  private Konto getSelectedKonto() throws ApplicationException
+  {
+    try
+    {
       Konto konto = (Konto) getKonto(false).getValue();
       settings.setAttribute("kontoid", konto.getID());
       return konto;
-    } catch (RemoteException ex) {
+    }
+    catch (RemoteException ex)
+    {
       final String meldung = "Konto der Buchung kann nicht ermittelt werden";
       Logger.error(meldung, ex);
       throw new ApplicationException(meldung, ex);
     }
   }
 
-  private Long getSelectedProjektId() throws ApplicationException {
-    try {
+  private Long getSelectedProjektId() throws ApplicationException
+  {
+    try
+    {
       Projekt projekt = (Projekt) getProjekt().getValue();
       if (null == projekt)
         return null;
       Long id = new Long(projekt.getID());
       return id;
-    } catch (RemoteException ex) {
+    }
+    catch (RemoteException ex)
+    {
       final String meldung = "Gewähltes Projekt kann nicht ermittelt werden";
       Logger.error(meldung, ex);
       throw new ApplicationException(meldung, ex);
     }
   }
 
-  private Long getSelectedBuchungsArtId() throws ApplicationException {
-    try {
+  private Long getSelectedBuchungsArtId() throws ApplicationException
+  {
+    try
+    {
       Buchungsart buchungsArt = (Buchungsart) getBuchungsart().getValue();
       if (null == buchungsArt)
         return null;
       Long id = new Long(buchungsArt.getID());
       return id;
-    } catch (RemoteException ex) {
+    }
+    catch (RemoteException ex)
+    {
       final String meldung = "Gewählte Buchungsart kann nicht ermittelt werden";
       Logger.error(meldung, ex);
       throw new ApplicationException(meldung, ex);
     }
   }
 
-  public Part getBuchungsList() throws RemoteException {
+  public Part getBuchungsList() throws RemoteException
+  {
     // Werte speichern
     Date dv = (Date) getVondatum().getValue();
-    if (dv == null) {
+    if (dv == null)
+    {
       throw new RemoteException("von-Datum fehlt!");
     }
     settings.setAttribute("vondatum", new JVDateFormatTTMMJJJJ().format(dv));
     Date db = (Date) getBisdatum().getValue();
-    if (db == null) {
+    if (db == null)
+    {
       throw new RemoteException("bis-Datum fehlt!");
     }
     settings.setAttribute("bisdatum", new JVDateFormatTTMMJJJJ().format(db));
     Konto k = null;
-    if (getSuchKonto().getValue() != null) {
+    if (getSuchKonto().getValue() != null)
+    {
       k = (Konto) getSuchKonto().getValue();
       settings.setAttribute("suchkontoid", k.getID());
-    } else {
+    }
+    else
+    {
       settings.setAttribute("suchkontoid", "");
     }
-    MitgliedZustand m = (MitgliedZustand) getSuchMitgliedZugeordnet().getValue();
-    if (m != null) {
+    MitgliedZustand m = (MitgliedZustand) getSuchMitgliedZugeordnet()
+        .getValue();
+    if (m != null)
+    {
       settings.setAttribute(MITGLIEDZUGEORDNET, m.getText());
     }
     Buchungsart b = (Buchungsart) getSuchBuchungsart().getValue();
-    if (b != null && b.getNummer() != 0) {
+    if (b != null && b.getNummer() != 0)
+    {
       b = (Buchungsart) getSuchBuchungsart().getValue();
       settings.setAttribute(BuchungsControl.BUCHUNGSART, b.getNummer());
     }
     Projekt p = (Projekt) getSuchProjekt().getValue();
-    if (p != null) {
+    if (p != null)
+    {
       p = (Projekt) getSuchProjekt().getValue();
       settings.setAttribute(BuchungsControl.PROJEKT, p.getID());
-    } else {
+    }
+    else
+    {
       settings.setAttribute(BuchungsControl.PROJEKT, -2);
     }
     settings.setAttribute("suchtext", (String) getSuchtext().getValue());
@@ -886,36 +1042,42 @@ public class BuchungsControl extends AbstractControl {
 
     query = new BuchungQuery(dv, db, k, b, p, (String) getSuchtext().getValue(),
         (String) getSuchBetrag().getValue(), m.getValue());
-    if (buchungsList == null) {
-      buchungsList = new BuchungListTablePart(query.get(), new BuchungAction(false));
-      if (!Einstellungen.getEinstellung().getVerwendeBelegnummer()) {
-        buchungsList.addColumn("Nr", "id-int");
-      } else {
-        buchungsList.addColumn("Nr", "belegnummer");
-      }
-
-      buchungsList.addColumn("S", "splitid", new Formatter() {
+    if (buchungsList == null)
+    {
+      buchungsList = new BuchungListTablePart(query.get(),
+          new BuchungAction(false));
+      buchungsList.addColumn("Nr", "id-int");
+      buchungsList.addColumn("S", "splitid", new Formatter()
+      {
         @Override
-        public String format(Object o) {
+        public String format(Object o)
+        {
           return (o != null ? "S" : " ");
         }
       });
-      buchungsList.addColumn("Konto", "konto", new Formatter() {
+      buchungsList.addColumn("Konto", "konto", new Formatter()
+      {
 
         @Override
-        public String format(Object o) {
+        public String format(Object o)
+        {
           Konto k = (Konto) o;
-          if (k != null) {
-            try {
+          if (k != null)
+          {
+            try
+            {
               return k.getBezeichnung();
-            } catch (RemoteException e) {
+            }
+            catch (RemoteException e)
+            {
               Logger.error("Fehler", e);
             }
           }
           return "";
         }
       });
-      buchungsList.addColumn("Datum", "datum", new DateFormatter(new JVDateFormatTTMMJJJJ()));
+      buchungsList.addColumn("Datum", "datum",
+          new DateFormatter(new JVDateFormatTTMMJJJJ()));
       // buchungsList.addColumn(new Column("auszugsnummer", "Auszug",
       // new Formatter()
       // {
@@ -938,10 +1100,14 @@ public class BuchungsControl extends AbstractControl {
       buchungsList.addColumn("Blatt", "blattnummer");
 
       buchungsList.addColumn("Name", "name");
-      buchungsList.addColumn("Verwendungszweck", "zweck", new Formatter() {
+      buchungsList.addColumn("IBAN oder Kontonummer", "iban");
+      buchungsList.addColumn("Verwendungszweck", "zweck", new Formatter()
+      {
         @Override
-        public String format(Object value) {
-          if (value == null) {
+        public String format(Object value)
+        {
+          if (value == null)
+          {
             return null;
           }
           String s = value.toString();
@@ -951,11 +1117,13 @@ public class BuchungsControl extends AbstractControl {
           return s;
         }
       });
-      buchungsList.addColumn("Buchungsart", "buchungsart", new BuchungsartFormatter());
+      buchungsList.addColumn("Buchungsart", "buchungsart",
+          new BuchungsartFormatter());
       buchungsList.addColumn("Betrag", "betrag",
           new CurrencyFormatter("", Einstellungen.DECIMALFORMAT));
-      buchungsList.addColumn(new Column("mitgliedskonto", "Mitglied", new MitgliedskontoFormatter(),
-          false, Column.ALIGN_AUTO, Column.SORT_BY_DISPLAY));
+      buchungsList.addColumn(new Column("mitgliedskonto", "Mitglied",
+          new MitgliedskontoFormatter(), false, Column.ALIGN_AUTO,
+          Column.SORT_BY_DISPLAY));
       buchungsList.addColumn("Projekt", "projekt", new ProjektFormatter());
       buchungsList.setMulti(true);
       buchungsList.setContextMenu(new BuchungMenu(this));
@@ -963,11 +1131,15 @@ public class BuchungsControl extends AbstractControl {
       buchungsList.setRememberOrder(true);
       buchungsList.setRememberState(true);
       buchungsList.addFeature(new FeatureSummary());
-      Application.getMessagingFactory().registerMessageConsumer(new BuchungMessageConsumer());
-    } else {
+      Application.getMessagingFactory()
+          .registerMessageConsumer(new BuchungMessageConsumer());
+    }
+    else
+    {
       buchungsList.removeAll();
 
-      for (Buchung bu : query.get()) {
+      for (Buchung bu : query.get())
+      {
         buchungsList.addItem(bu);
       }
       buchungsList.sort();
@@ -978,116 +1150,150 @@ public class BuchungsControl extends AbstractControl {
     return buchungsList;
   }
 
-  public Part getSplitBuchungsList() throws RemoteException {
-    if (splitbuchungsList == null) {
-      splitbuchungsList =
-          new SplitbuchungListTablePart(SplitbuchungsContainer.get(), new BuchungAction(true));
-      if (!Einstellungen.getEinstellung().getVerwendeBelegnummer()) {
-        splitbuchungsList.addColumn("Nr", "id-int");
-      } else {
-        splitbuchungsList.addColumn("Nr", "belegnummer");
-      }
-
-      splitbuchungsList.addColumn("Konto", "konto", new Formatter() {
+  public Part getSplitBuchungsList() throws RemoteException
+  {
+    if (splitbuchungsList == null)
+    {
+      splitbuchungsList = new SplitbuchungListTablePart(
+          SplitbuchungsContainer.get(), new BuchungAction(true));
+      splitbuchungsList.addColumn("Nr", "id-int");
+      splitbuchungsList.addColumn("Konto", "konto", new Formatter()
+      {
         @Override
-        public String format(Object o) {
+        public String format(Object o)
+        {
           Konto k = (Konto) o;
-          if (k != null) {
-            try {
+          if (k != null)
+          {
+            try
+            {
               return k.getBezeichnung();
-            } catch (RemoteException e) {
+            }
+            catch (RemoteException e)
+            {
               Logger.error("Fehler", e);
             }
           }
           return "";
         }
       });
-      splitbuchungsList.addColumn("Typ", "splittyp", new Formatter() {
+      splitbuchungsList.addColumn("Typ", "splittyp", new Formatter()
+      {
         @Override
-        public String format(Object o) {
+        public String format(Object o)
+        {
           Integer typ = (Integer) o;
           return SplitbuchungTyp.get(typ);
         }
       });
-      splitbuchungsList.addColumn("Datum", "datum", new DateFormatter(new JVDateFormatTTMMJJJJ()));
+      splitbuchungsList.addColumn("Datum", "datum",
+          new DateFormatter(new JVDateFormatTTMMJJJJ()));
       splitbuchungsList.addColumn("Auszug", "auszugsnummer");
       splitbuchungsList.addColumn("Blatt", "blattnummer");
       splitbuchungsList.addColumn("Name", "name");
       splitbuchungsList.addColumn("Verwendungszweck", "zweck");
-      splitbuchungsList.addColumn("Buchungsart", "buchungsart", new BuchungsartFormatter());
+      splitbuchungsList.addColumn("Buchungsart", "buchungsart",
+          new BuchungsartFormatter());
       splitbuchungsList.addColumn("Betrag", "betrag",
           new CurrencyFormatter("", Einstellungen.DECIMALFORMAT));
-      splitbuchungsList.addColumn("Mitglied", "mitgliedskonto", new MitgliedskontoFormatter());
+      splitbuchungsList.addColumn("Mitglied", "mitgliedskonto",
+          new MitgliedskontoFormatter());
       splitbuchungsList.addColumn("Projekt", "projekt", new ProjektFormatter());
       splitbuchungsList.setContextMenu(new SplitBuchungMenu(this));
       splitbuchungsList.setRememberColWidths(true);
       splitbuchungsList.addFeature(new FeatureSummary());
-      Application.getMessagingFactory().registerMessageConsumer(new SplitBuchungMessageConsumer());
-      splitbuchungsList.setFormatter(new TableFormatter() {
+      Application.getMessagingFactory()
+          .registerMessageConsumer(new SplitBuchungMessageConsumer());
+      splitbuchungsList.setFormatter(new TableFormatter()
+      {
         /**
          * @see de.willuhn.jameica.gui.formatter.TableFormatter#format(org.eclipse.swt.widgets.TableItem)
          */
         @Override
-        public void format(TableItem item) {
-          if (item == null) {
+        public void format(TableItem item)
+        {
+          if (item == null)
+          {
             return;
           }
-          try {
+          try
+          {
             Buchung b = (Buchung) item.getData();
-            if (b.isToDelete()) {
+            if (b.isToDelete())
+            {
               item.setForeground(new Color(null, new RGB(255, 0, 0)));
             }
-          } catch (Exception e) {
+          }
+          catch (Exception e)
+          {
             Logger.error("unable to format line", e);
           }
         }
       });
-    } else {
+    }
+    else
+    {
       refreshSplitbuchungen();
     }
     return splitbuchungsList;
   }
 
-  public void refreshBuchungen() throws RemoteException {
-    if (buchungsList == null) {
+  public void refreshBuchungen() throws RemoteException
+  {
+    if (buchungsList == null)
+    {
       return;
     }
     buchungsList.removeAll();
 
-    for (Buchung b : query.get()) {
+    for (Buchung b : query.get())
+    {
       buchungsList.addItem(b);
     }
   }
 
-  public void refreshSplitbuchungen() throws RemoteException {
-    if (splitbuchungsList == null) {
+  public void refreshSplitbuchungen() throws RemoteException
+  {
+    if (splitbuchungsList == null)
+    {
       return;
     }
     splitbuchungsList.removeAll();
 
-    for (Buchung b : SplitbuchungsContainer.get()) {
+    for (Buchung b : SplitbuchungsContainer.get())
+    {
       splitbuchungsList.addItem(b);
     }
   }
 
-  private void starteAuswertung(boolean einzelbuchungen) {
+  private void starteAuswertung(boolean einzelbuchungen)
+  {
 
-    try {
-      DBIterator<Buchungsart> list = Einstellungen.getDBService().createList(Buchungsart.class);
-      if (query.getBuchungsart() != null && query.getBuchungsart().getArt() != -2) {
-        list.addFilter("id = ?", new Object[] {query.getBuchungsart().getID()});
+    try
+    {
+      DBIterator<Buchungsart> list = Einstellungen.getDBService()
+          .createList(Buchungsart.class);
+      if (query.getBuchungsart() != null
+          && query.getBuchungsart().getArt() != -2)
+      {
+        list.addFilter("id = ?",
+            new Object[] { query.getBuchungsart().getID() });
       }
-      if (query.getBuchungsart() != null && query.getBuchungsart().getArt() == -1) {
+      if (query.getBuchungsart() != null
+          && query.getBuchungsart().getArt() == -1)
+      {
         list.addFilter("id = ?", -1);
       }
       list.setOrder("ORDER BY nummer");
       ArrayList<Buchungsart> buchungsarten = new ArrayList<>();
-      while (list.hasNext()) {
+      while (list.hasNext())
+      {
         buchungsarten.add(list.next());
       }
-      if (buchungsarten.size() > 1) {
-        Buchungsart ohnezuordnung =
-            (Buchungsart) Einstellungen.getDBService().createObject(Buchungsart.class, null);
+      if (buchungsarten.size() > 1)
+      {
+        Buchungsart ohnezuordnung = (Buchungsart) Einstellungen.getDBService()
+            .createObject(Buchungsart.class, null);
         ohnezuordnung.setBezeichnung("Ohne Zuordnung");
         ohnezuordnung.setArt(-1);
         buchungsarten.add(ohnezuordnung);
@@ -1096,8 +1302,10 @@ public class BuchungsControl extends AbstractControl {
       FileDialog fd = new FileDialog(GUI.getShell(), SWT.SAVE);
       fd.setText("Ausgabedatei wählen.");
 
-      String path = settings.getString("lastdir", System.getProperty("user.home"));
-      if (path != null && path.length() > 0) {
+      String path = settings.getString("lastdir",
+          System.getProperty("user.home"));
+      if (path != null && path.length() > 0)
+      {
         fd.setFilterPath(path);
       }
       fd.setFileName(new Dateiname("buchungen", "",
@@ -1105,7 +1313,8 @@ public class BuchungsControl extends AbstractControl {
 
       final String s = fd.open();
 
-      if (s == null || s.length() == 0) {
+      if (s == null || s.length() == 0)
+      {
         return;
       }
 
@@ -1113,21 +1322,27 @@ public class BuchungsControl extends AbstractControl {
       settings.setAttribute("lastdir", file.getParent());
 
       auswertungBuchungPDF(buchungsarten, file, einzelbuchungen);
-    } catch (RemoteException e) {
+    }
+    catch (RemoteException e)
+    {
       e.printStackTrace();
     }
   }
 
-  private void starteCSVExport() {
+  private void starteCSVExport()
+  {
 
-    try {
+    try
+    {
       final List<Buchung> buchungen = query.get();
 
       FileDialog fd = new FileDialog(GUI.getShell(), SWT.SAVE);
       fd.setText("Ausgabedatei wählen.");
 
-      String path = settings.getString("lastdir", System.getProperty("user.home"));
-      if (path != null && path.length() > 0) {
+      String path = settings.getString("lastdir",
+          System.getProperty("user.home"));
+      if (path != null && path.length() > 0)
+      {
         fd.setFilterPath(path);
       }
       fd.setFileName(new Dateiname("buchungen", "",
@@ -1135,22 +1350,28 @@ public class BuchungsControl extends AbstractControl {
 
       final String s = fd.open();
 
-      if (s == null || s.length() == 0) {
+      if (s == null || s.length() == 0)
+      {
         return;
       }
 
       final File file = new File(s);
       settings.setAttribute("lastdir", file.getParent());
 
-      BackgroundTask t = new BackgroundTask() {
+      BackgroundTask t = new BackgroundTask()
+      {
 
         @SuppressWarnings("unused")
         @Override
-        public void run(ProgressMonitor monitor) throws ApplicationException {
-          try {
+        public void run(ProgressMonitor monitor) throws ApplicationException
+        {
+          try
+          {
             new BuchungAuswertungCSV(buchungen, file, monitor);
             GUI.getCurrentView().reload();
-          } catch (Exception ae) {
+          }
+          catch (Exception ae)
+          {
             Logger.error("Fehler", ae);
             GUI.getStatusBar().setErrorText(ae.getMessage());
             throw new ApplicationException(ae);
@@ -1158,40 +1379,53 @@ public class BuchungsControl extends AbstractControl {
         }
 
         @Override
-        public void interrupt() {
+        public void interrupt()
+        {
           //
         }
 
         @Override
-        public boolean isInterrupted() {
+        public boolean isInterrupted()
+        {
           return false;
         }
       };
       Application.getController().start(t);
-    } catch (RemoteException e) {
+    }
+    catch (RemoteException e)
+    {
       Logger.error("Fehler", e);
     }
   }
 
-  private void starteAuswertungBuchungsjournal() {
+  private void starteAuswertungBuchungsjournal()
+  {
 
-    try {
+    try
+    {
 
-      BuchungsjournalSortDialog djs =
-          new BuchungsjournalSortDialog(BuchungsjournalSortDialog.POSITION_CENTER);
+      BuchungsjournalSortDialog djs = new BuchungsjournalSortDialog(
+          BuchungsjournalSortDialog.POSITION_CENTER);
       String sort = djs.open();
-      if (sort.equals(BuchungsjournalSortDialog.DATUM)) {
+      if (sort.equals(BuchungsjournalSortDialog.DATUM))
+      {
         query.setOrderDatumAuszugsnummerBlattnummer();
-      } else if (sort.equals(BuchungsjournalSortDialog.DATUM_NAME)) {
+      }
+      else if (sort.equals(BuchungsjournalSortDialog.DATUM_NAME))
+      {
         query.setOrderDatumName();
-      } else {
+      }
+      else
+      {
         query.setOrderID();
       }
       FileDialog fd = new FileDialog(GUI.getShell(), SWT.SAVE);
       fd.setText("Ausgabedatei wählen.");
 
-      String path = settings.getString("lastdir", System.getProperty("user.home"));
-      if (path != null && path.length() > 0) {
+      String path = settings.getString("lastdir",
+          System.getProperty("user.home"));
+      if (path != null && path.length() > 0)
+      {
         fd.setFilterPath(path);
       }
       fd.setFileName(new Dateiname("buchungsjournal", "",
@@ -1199,7 +1433,8 @@ public class BuchungsControl extends AbstractControl {
 
       final String s = fd.open();
 
-      if (s == null || s.length() == 0) {
+      if (s == null || s.length() == 0)
+      {
         return;
       }
 
@@ -1207,22 +1442,30 @@ public class BuchungsControl extends AbstractControl {
       settings.setAttribute("lastdir", file.getParent());
 
       auswertungBuchungsjournalPDF(query, file);
-    } catch (Exception e) {
+    }
+    catch (Exception e)
+    {
       Logger.error("Fehler", e);
     }
   }
 
-  private void auswertungBuchungPDF(final ArrayList<Buchungsart> buchungsarten, final File file,
-      final boolean einzelbuchungen) {
-    BackgroundTask t = new BackgroundTask() {
+  private void auswertungBuchungPDF(final ArrayList<Buchungsart> buchungsarten,
+      final File file, final boolean einzelbuchungen)
+  {
+    BackgroundTask t = new BackgroundTask()
+    {
 
       @SuppressWarnings("unused")
       @Override
-      public void run(ProgressMonitor monitor) throws ApplicationException {
-        try {
+      public void run(ProgressMonitor monitor) throws ApplicationException
+      {
+        try
+        {
           GUI.getStatusBar().setSuccessText("Auswertung gestartet");
           new BuchungAuswertungPDF(buchungsarten, file, query, einzelbuchungen);
-        } catch (ApplicationException ae) {
+        }
+        catch (ApplicationException ae)
+        {
           Logger.error("Fehler", ae);
           GUI.getStatusBar().setErrorText(ae.getMessage());
           throw ae;
@@ -1230,124 +1473,163 @@ public class BuchungsControl extends AbstractControl {
       }
 
       @Override
-      public void interrupt() {
+      public void interrupt()
+      {
         //
       }
 
       @Override
-      public boolean isInterrupted() {
+      public boolean isInterrupted()
+      {
         return false;
       }
     };
     Application.getController().start(t);
   }
 
-  public Settings getSettings() {
+  public Settings getSettings()
+  {
     return settings;
   }
 
-  private void auswertungBuchungsjournalPDF(final BuchungQuery query, final File file) {
-    BackgroundTask t = new BackgroundTask() {
+  private void auswertungBuchungsjournalPDF(final BuchungQuery query,
+      final File file)
+  {
+    BackgroundTask t = new BackgroundTask()
+    {
 
       @SuppressWarnings("unused")
       @Override
-      public void run(ProgressMonitor monitor) throws ApplicationException {
-        try {
+      public void run(ProgressMonitor monitor) throws ApplicationException
+      {
+        try
+        {
           new BuchungsjournalPDF(query, file);
           GUI.getCurrentView().reload();
-        } catch (ApplicationException ae) {
+        }
+        catch (ApplicationException ae)
+        {
           GUI.getStatusBar().setErrorText(ae.getMessage());
           throw ae;
         }
       }
 
       @Override
-      public void interrupt() {
+      public void interrupt()
+      {
         //
       }
 
       @Override
-      public boolean isInterrupted() {
+      public boolean isInterrupted()
+      {
         return false;
       }
     };
     Application.getController().start(t);
   }
 
-  public class FilterListener implements Listener {
+  public class FilterListener implements Listener
+  {
 
-    FilterListener() {
+    FilterListener()
+    {
     }
 
     @Override
-    public void handleEvent(Event event) {
-      if (event.type != SWT.Selection && event.type != SWT.FocusOut) {
+    public void handleEvent(Event event)
+    {
+      if (event.type != SWT.Selection && event.type != SWT.FocusOut)
+      {
         return;
       }
 
-      try {
+      try
+      {
         getBuchungsList();
-      } catch (RemoteException e) {
+      }
+      catch (RemoteException e)
+      {
         GUI.getStatusBar().setErrorText(e.getMessage());
       }
     }
 
   }
 
-  private void informKontoChangeListener() throws RemoteException {
+  private void informKontoChangeListener() throws RemoteException
+  {
     Konto k = (Konto) getSuchKonto().getValue();
     Event event = new Event();
     event.data = k;
-    for (Listener listener : changeKontoListener) {
+    for (Listener listener : changeKontoListener)
+    {
       listener.handleEvent(event);
     }
   }
 
-  public void addKontoChangeListener(Listener listener) {
+  public void addKontoChangeListener(Listener listener)
+  {
     this.changeKontoListener.add(listener);
   }
 
-  public String getTitleBuchungsView() throws RemoteException {
+  public String getTitleBuchungsView() throws RemoteException
+  {
     if (getBuchung().getSpeicherung())
       return "Buchung";
     return "Splitbuchung";
   }
 
-  public boolean isBuchungAbgeschlossen() throws ApplicationException {
-    try {
-      if (!getBuchung().isNewObject()) {
+  public boolean isBuchungAbgeschlossen() throws ApplicationException
+  {
+    try
+    {
+      if (!getBuchung().isNewObject())
+      {
         Jahresabschluss ja = getBuchung().getJahresabschluss();
-        if (ja != null) {
-          GUI.getStatusBar()
-              .setErrorText(String.format("Buchung wurde bereits am %s von %s abgeschlossen.",
-                  new JVDateFormatTTMMJJJJ().format(ja.getDatum()), ja.getName()));
+        if (ja != null)
+        {
+          GUI.getStatusBar().setErrorText(String.format(
+              "Buchung wurde bereits am %s von %s abgeschlossen.",
+              new JVDateFormatTTMMJJJJ().format(ja.getDatum()), ja.getName()));
           return true;
         }
       }
-    } catch (RemoteException e) {
-      throw new ApplicationException("Status der aktuellen Buchung kann nicht geprüft werden.", e);
+    }
+    catch (RemoteException e)
+    {
+      throw new ApplicationException(
+          "Status der aktuellen Buchung kann nicht geprüft werden.", e);
     }
     return false;
   }
 
-  public Action getBuchungSpeichernAction() {
-    return new Action() {
+  public Action getBuchungSpeichernAction()
+  {
+    return new Action()
+    {
       @Override
-      public void handleAction(Object context) {
+      public void handleAction(Object context)
+      {
         buchungSpeichern();
       }
     };
   }
 
-  private void buchungSpeichern() {
-    try {
+  private void buchungSpeichern()
+  {
+    try
+    {
       DBTransaction.starten();
       handleStore();
       DBTransaction.commit();
       refreshSplitbuchungen();
-    } catch (RemoteException e) {
+    }
+    catch (RemoteException e)
+    {
       Logger.error("Fehler", e);
-    } catch (ApplicationException e) {
+    }
+    catch (ApplicationException e)
+    {
       DBTransaction.rollback();
       GUI.getStatusBar().setErrorText(e.getLocalizedMessage());
     }
@@ -1356,13 +1638,15 @@ public class BuchungsControl extends AbstractControl {
   /**
    * Wird benachrichtigt um die Anzeige zu aktualisieren.
    */
-  private class BuchungMessageConsumer implements MessageConsumer {
+  private class BuchungMessageConsumer implements MessageConsumer
+  {
 
     /**
      * @see de.willuhn.jameica.messaging.MessageConsumer#autoRegister()
      */
     @Override
-    public boolean autoRegister() {
+    public boolean autoRegister()
+    {
       return false;
     }
 
@@ -1370,28 +1654,36 @@ public class BuchungsControl extends AbstractControl {
      * @see de.willuhn.jameica.messaging.MessageConsumer#getExpectedMessageTypes()
      */
     @Override
-    public Class<?>[] getExpectedMessageTypes() {
-      return new Class[] {BuchungMessage.class};
+    public Class<?>[] getExpectedMessageTypes()
+    {
+      return new Class[] { BuchungMessage.class };
     }
 
     /**
      * @see de.willuhn.jameica.messaging.MessageConsumer#handleMessage(de.willuhn.jameica.messaging.Message)
      */
     @Override
-    public void handleMessage(final Message message) throws Exception {
-      GUI.getDisplay().syncExec(new Runnable() {
+    public void handleMessage(final Message message) throws Exception
+    {
+      GUI.getDisplay().syncExec(new Runnable()
+      {
 
         @Override
-        public void run() {
-          try {
-            if (buchungsList == null) {
+        public void run()
+        {
+          try
+          {
+            if (buchungsList == null)
+            {
               // Eingabe-Feld existiert nicht. Also abmelden
               Application.getMessagingFactory()
                   .unRegisterMessageConsumer(BuchungMessageConsumer.this);
               return;
             }
             refreshBuchungen();
-          } catch (Exception e) {
+          }
+          catch (Exception e)
+          {
             // Wenn hier ein Fehler auftrat, deregistrieren wir uns
             // wieder
             Logger.error("unable to refresh Splitbuchungen", e);
@@ -1406,13 +1698,15 @@ public class BuchungsControl extends AbstractControl {
   /**
    * Wird benachrichtigt um die Anzeige zu aktualisieren.
    */
-  private class SplitBuchungMessageConsumer implements MessageConsumer {
+  private class SplitBuchungMessageConsumer implements MessageConsumer
+  {
 
     /**
      * @see de.willuhn.jameica.messaging.MessageConsumer#autoRegister()
      */
     @Override
-    public boolean autoRegister() {
+    public boolean autoRegister()
+    {
       return false;
     }
 
@@ -1420,28 +1714,36 @@ public class BuchungsControl extends AbstractControl {
      * @see de.willuhn.jameica.messaging.MessageConsumer#getExpectedMessageTypes()
      */
     @Override
-    public Class<?>[] getExpectedMessageTypes() {
-      return new Class[] {BuchungMessage.class};
+    public Class<?>[] getExpectedMessageTypes()
+    {
+      return new Class[] { BuchungMessage.class };
     }
 
     /**
      * @see de.willuhn.jameica.messaging.MessageConsumer#handleMessage(de.willuhn.jameica.messaging.Message)
      */
     @Override
-    public void handleMessage(final Message message) throws Exception {
-      GUI.getDisplay().syncExec(new Runnable() {
+    public void handleMessage(final Message message) throws Exception
+    {
+      GUI.getDisplay().syncExec(new Runnable()
+      {
 
         @Override
-        public void run() {
-          try {
-            if (splitbuchungsList == null) {
+        public void run()
+        {
+          try
+          {
+            if (splitbuchungsList == null)
+            {
               // Eingabe-Feld existiert nicht. Also abmelden
               Application.getMessagingFactory()
                   .unRegisterMessageConsumer(SplitBuchungMessageConsumer.this);
               return;
             }
             refreshSplitbuchungen();
-          } catch (Exception e) {
+          }
+          catch (Exception e)
+          {
             // Wenn hier ein Fehler auftrat, deregistrieren wir uns
             // wieder
             Logger.error("unable to refresh Splitbuchungen", e);
@@ -1453,8 +1755,10 @@ public class BuchungsControl extends AbstractControl {
     }
   }
 
-  public Input getSuchMitgliedZugeordnet() {
-    if (hasmitglied != null) {
+  public Input getSuchMitgliedZugeordnet()
+  {
+    if (hasmitglied != null)
+    {
       return hasmitglied;
     }
 
@@ -1471,8 +1775,10 @@ public class BuchungsControl extends AbstractControl {
 
     String bwert = settings.getString(MITGLIEDZUGEORDNET, "Beide");
     MitgliedZustand b = ja;
-    for (int i = 0; i < liste.size(); i++) {
-      if (liste.get(i).getText().equals(bwert)) {
+    for (int i = 0; i < liste.size(); i++)
+    {
+      if (liste.get(i).getText().equals(bwert))
+      {
         b = liste.get(i);
         break;
       }
@@ -1487,30 +1793,37 @@ public class BuchungsControl extends AbstractControl {
   /**
    * Hilfsklasse zur Anzeige der Importer.
    */
-  private class MitgliedZustand implements GenericObject, Comparable<MitgliedZustand> {
+  private class MitgliedZustand
+      implements GenericObject, Comparable<MitgliedZustand>
+  {
 
     private Boolean value = null;
 
     private String text = null;
 
-    private MitgliedZustand(Boolean value, String text) {
+    private MitgliedZustand(Boolean value, String text)
+    {
       this.value = value;
       this.text = text;
     }
 
-    public Boolean getValue() {
+    public Boolean getValue()
+    {
       return value;
     }
 
-    public void setValue(Boolean value) {
+    public void setValue(Boolean value)
+    {
       this.value = value;
     }
 
-    public String getText() {
+    public String getText()
+    {
       return text;
     }
 
-    public void setText(String text) {
+    public void setText(String text)
+    {
       this.text = text;
     }
 
@@ -1518,7 +1831,8 @@ public class BuchungsControl extends AbstractControl {
      * @see de.willuhn.datasource.GenericObject#getAttribute(java.lang.String)
      */
     @Override
-    public Object getAttribute(String arg0) {
+    public Object getAttribute(String arg0)
+    {
       return getText();
     }
 
@@ -1526,15 +1840,17 @@ public class BuchungsControl extends AbstractControl {
      * @see de.willuhn.datasource.GenericObject#getAttributeNames()
      */
     @Override
-    public String[] getAttributeNames() {
-      return new String[] {"name"};
+    public String[] getAttributeNames()
+    {
+      return new String[] { "name" };
     }
 
     /**
      * @see de.willuhn.datasource.GenericObject#getID()
      */
     @Override
-    public String getID() {
+    public String getID()
+    {
       String repr = "null";
       if (getValue() != null)
         Boolean.toString(getValue());
@@ -1546,7 +1862,8 @@ public class BuchungsControl extends AbstractControl {
      * @see de.willuhn.datasource.GenericObject#getPrimaryAttribute()
      */
     @Override
-    public String getPrimaryAttribute() {
+    public String getPrimaryAttribute()
+    {
       return "name";
     }
 
@@ -1554,7 +1871,8 @@ public class BuchungsControl extends AbstractControl {
      * @see de.willuhn.datasource.GenericObject#equals(de.willuhn.datasource.GenericObject)
      */
     @Override
-    public boolean equals(GenericObject arg0) throws RemoteException {
+    public boolean equals(GenericObject arg0) throws RemoteException
+    {
       if (arg0 == null)
         return false;
       return this.getID().equals(arg0.getID());
@@ -1564,13 +1882,18 @@ public class BuchungsControl extends AbstractControl {
      * @see java.lang.Comparable#compareTo(java.lang.Object)
      */
     @Override
-    public int compareTo(MitgliedZustand o) {
-      if (o == null) {
+    public int compareTo(MitgliedZustand o)
+    {
+      if (o == null)
+      {
         return -1;
       }
-      try {
+      try
+      {
         return this.getText().compareTo((o).getText());
-      } catch (Exception e) {
+      }
+      catch (Exception e)
+      {
         // Tss, dann halt nicht
       }
       return 0;
